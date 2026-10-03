@@ -3,4 +3,4 @@
 - random forest
 - gradient boost ,stacking?
 - pca, clustering
-- other model xgboost,... แต่ขกทำ
+- other model: xgboost,... แต่ขกทำ
