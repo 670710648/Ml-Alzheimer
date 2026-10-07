@@ -2,5 +2,5 @@
 - feature selection
 - random forest
 - gradient boost ,stacking?
-- pca, clustering
+- pca
 - other model: xgboost,... แต่ขกทำ
