@@ -1,7 +1,7 @@
 ที่ต้องทำเพิ่ม
--correlation(น่าจะไม่ค่อยwork)
+
+- correlation(น่าจะไม่ค่อยwork)
 - stacking ไม่ต้องทำ
-- pca (ยังไม่ทำ)
 - other model: xgboost,... แต่ขกทำ
 
 ============================================================== <br>
@@ -18,3 +18,4 @@ comparison model ทำละ เลือก best model แต่ละตั�
 กำลังทำ
 ยังไม่ check code
 กราฟค่า score ที่เปลี่ยนไปในแต่ละ split, param
+pca
