@@ -3,6 +3,7 @@
 - stacking ไม่ต้องทำ
 - pca (ยังไม่ทำ)
 - other model: xgboost,... แต่ขกทำ
+
 ============================================================== <br>
 
 ทำ feature selection rfe,anova ไปแล้ว
