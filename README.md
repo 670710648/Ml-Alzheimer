@@ -9,6 +9,7 @@
 ทำ feature selection rfe,anova ไปแล้ว
 check ว่าทำก่อน scaled, หลัง scaled แล้ว
 comparison model ทำละ เลือก best model แต่ละตัว แต่ละ split มาจาก cell 8
+
 ============================================================== <br>
 
 กำลังทำ
