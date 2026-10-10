@@ -18,4 +18,4 @@ comparison model ทำละ เลือก best model แต่ละตั�
 กำลังทำ
 ยังไม่ check code
 กราฟค่า score ที่เปลี่ยนไปในแต่ละ split, param
-pca
+- pca
