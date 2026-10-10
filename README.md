@@ -18,3 +18,4 @@
 - ยังไม่ check code
 - กราฟค่า score ที่เปลี่ยนไปในแต่ละ split, param
 - pca
+- format code ตอน print
