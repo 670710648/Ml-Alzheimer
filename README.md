@@ -11,10 +11,9 @@
 - feature engineer
 - lasso feature selection by bossYAI panyanat
 - correlation (น่าจะไม่ค่อยwork)+ต้องตัดเอง (ps.อาจจะทำไปแล้ว)
-
 <br>
 ============================================================== 
-
+<br>
 กำลังทำ
 - ยังไม่ check code
 - กราฟค่า score ที่เปลี่ยนไปในแต่ละ split, param (ทำแล้วบางส่วนเช็คในmodel_results)
