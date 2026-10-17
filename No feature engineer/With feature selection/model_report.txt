@@ -1,0 +1,430 @@
+ALZHEIMER'S DIAGNOSIS MODEL EVALUATION
+========================================================================
+The first number in each requested ratio is the test percentage; the second is the training percentage.
+Every ratio uses a stratified holdout split and 3-fold stratified CV on its training partition.
+Imputation, one-hot encoding, scaling, consensus clustering-based feature selection, Lasso selection, and PCA are fitted inside each training fold; no derived features are created.
+The full-data feature-selection preview below is descriptive only; model selection is refitted inside each training fold.
+
+DATA AND FEATURE PROCESSING
+------------------------------------------------------------------------
+Rows: 2149
+Diagnosis counts: {0: 1389, 1: 760}
+Raw predictors after dropping IDs/placeholders: 32
+Feature engineering: not applied; the original CSV predictor columns are used as inputs.
+Gender, Ethnicity, and EducationLevel are one-hot encoded; other numeric inputs are median-imputed and all encoded features scaled.
+Encoded/scaled features used by each model: 39
+
+CLUSTER-BASED FEATURE ANALYSIS
+------------------------------------------------------------------------
+These descriptive cluster assignments are based on the original CSV predictors.
+Agglomerative feature clusters: 38 (average linkage on absolute-correlation distance).
+Divisive Bisecting K-Means feature clusters: 3 (silhouette=0.140; cluster count chosen by silhouette score).
+DBSCAN feature clusters: 1; ungrouped/noise features: 37.
+Consensus redundant groups: 1; candidate representatives retained: 38 of 39 encoded features.
+A redundant pair is collapsed only when at least two clustering methods agree and absolute feature correlation is at least 0.849; the representative is chosen by absolute Diagnosis association.
+Candidate representatives from the full-data descriptive pass:
+  Age
+  BMI
+  Smoking
+  AlcoholConsumption
+  PhysicalActivity
+  DietQuality
+  SleepQuality
+  FamilyHistoryAlzheimers
+  CardiovascularDisease
+  Diabetes
+  Depression
+  HeadInjury
+  Hypertension
+  SystolicBP
+  DiastolicBP
+  CholesterolTotal
+  CholesterolLDL
+  CholesterolHDL
+  CholesterolTriglycerides
+  MMSE
+  FunctionalAssessment
+  MemoryComplaints
+  BehavioralProblems
+  ADL
+  Confusion
+  Disorientation
+  PersonalityChanges
+  DifficultyCompletingTasks
+  Forgetfulness
+  Gender_0
+  Ethnicity_0
+  Ethnicity_1
+  Ethnicity_2
+  Ethnicity_3
+  EducationLevel_0
+  EducationLevel_1
+  EducationLevel_2
+  EducationLevel_3
+The consensus screening is applied inside each training fold before Lasso and PCA; the descriptive list above is not used as a precomputed input to holdout or CV scoring.
+Lasso-selected features after consensus screening: 14 (full-data descriptive alpha=0.01; fold-local alpha candidates=(0.001, 0.003, 0.01, 0.02, 0.05); absolute coefficient threshold>1e-05).
+PCA components retained: 14 (at least 95% variance; observed 100.0%).
+Lasso-selected columns and coefficients:
+  FunctionalAssessment: coefficient=-0.152352
+  ADL: coefficient=-0.140027
+  MemoryComplaints: coefficient=0.133444
+  BehavioralProblems: coefficient=0.103804
+  MMSE: coefficient=-0.102417
+  CholesterolLDL: coefficient=-0.006570
+  SleepQuality: coefficient=-0.004762
+  EducationLevel_0: coefficient=0.003416
+  Age: coefficient=-0.003258
+  CholesterolHDL: coefficient=0.002905
+  CholesterolTriglycerides: coefficient=0.002700
+  Smoking: coefficient=-0.002092
+  Ethnicity_1: coefficient=-0.001270
+  Hypertension: coefficient=0.001019
+PCA retained component variance:
+  PC1: 8.15% (cumulative 8.15%)
+  PC2: 7.86% (cumulative 16.01%)
+  PC3: 7.83% (cumulative 23.84%)
+  PC4: 7.55% (cumulative 31.39%)
+  PC5: 7.49% (cumulative 38.88%)
+  PC6: 7.38% (cumulative 46.26%)
+  PC7: 7.26% (cumulative 53.52%)
+  PC8: 7.11% (cumulative 60.64%)
+  PC9: 6.88% (cumulative 67.52%)
+  PC10: 6.76% (cumulative 74.28%)
+  PC11: 6.71% (cumulative 80.99%)
+  PC12: 6.48% (cumulative 87.47%)
+  PC13: 6.34% (cumulative 93.81%)
+  PC14: 6.19% (cumulative 100.00%)
+
+RAW FEATURE INPUT
+------------------------------------------------------------------------
+No derived predictor columns were added. The heatmap shows only raw numeric predictors; clustering and other preprocessing remain fold-local for model evaluation.
+
+STACKING DESIGN
+------------------------------------------------------------------------
+Each candidate stacks three base learners; a logistic-regression meta-learner combines out-of-fold outputs (probabilities where available and SVM decision scores otherwise). Candidate combinations are compared by 3-fold validation F1 on each training partition, using the same one-standard-error/gap rule as the individual model searches; only the selected candidate is scored on that holdout.
+For both model hyperparameters and stack candidates, choose the smallest nonnegative train/CV F1 gap among choices within one standard error of the peak CV F1; ties prefer higher CV F1.
+The candidates introduce different decision patterns: a linear logistic baseline, RBF-SVM margins, shallow-tree interactions, MLP nonlinearities, and (in one candidate) bagged random trees. This is a practical diversity rationale; the reported CV scores show which combination is actually preferred for each split.
+
+TEST:TRAIN 5:95
+------------------------------------------------------------------------
+Logistic Regression
+  CV (3-fold) accuracy=0.8128, F1=0.7549, precision=0.7037, recall=0.8143, train-F1=0.7693, train/CV F1 gap=0.0144
+  Holdout accuracy=0.7593, F1=0.7045, precision=0.6200, recall=0.8158
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[51, 19], [7, 31]]
+  Best settings: {'classifier__C': 10.0, 'classifier__class_weight': 'balanced'}
+Decision Tree
+  CV (3-fold) accuracy=0.6982, F1=0.6273, precision=0.5541, recall=0.7284, train-F1=0.7052, train/CV F1 gap=0.0778
+  Holdout accuracy=0.7407, F1=0.6500, precision=0.6190, recall=0.6842
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[54, 16], [12, 26]]
+  Best settings: {'classifier__class_weight': 'balanced', 'classifier__max_depth': 4, 'classifier__min_samples_leaf': 15}
+Random Forest
+  CV (3-fold) accuracy=0.8207, F1=0.7603, precision=0.7199, recall=0.8060, train-F1=0.8522, train/CV F1 gap=0.0920
+  Holdout accuracy=0.7963, F1=0.7556, precision=0.6538, recall=0.8947
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[52, 18], [4, 34]]
+  Best settings: {'classifier__class_weight': 'balanced_subsample', 'classifier__max_depth': 6, 'classifier__max_features': 'sqrt', 'classifier__min_samples_leaf': 15, 'classifier__n_estimators': 200}
+XGBoost
+  CV (3-fold) accuracy=0.8074, F1=0.7479, precision=0.6977, recall=0.8061, train-F1=0.8376, train/CV F1 gap=0.0897
+  Holdout accuracy=0.8148, F1=0.7727, precision=0.6800, recall=0.8947
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[54, 16], [4, 34]]
+  Best settings: {'classifier__learning_rate': 0.07, 'classifier__max_depth': 2, 'classifier__n_estimators': 120, 'classifier__scale_pos_weight': 1.8268698060941828}
+Stacking Ensemble — stacking candidate: LR + RBF-SVM + MLP
+  CV (3-fold) accuracy=0.8456, F1=0.7986, precision=0.7423, recall=0.8642, train-F1=0.8616, train/CV F1 gap=0.0630
+  Holdout accuracy=0.8241, F1=0.7816, precision=0.6939, recall=0.8947
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[55, 15], [4, 34]]
+  Best settings: LogisticRegression meta-learner; candidate=LR + RBF-SVM + MLP
+Stacking candidate CV comparison (one-SE/gap rule):
+  LR + RBF-SVM + shallow DT: F1=0.7970, F1 SD=0.0443, accuracy=0.8442, precision=0.7406, recall=0.8628, train/CV F1 gap=0.0652
+  LR + RBF-SVM + MLP: F1=0.7986, F1 SD=0.0368, accuracy=0.8456, precision=0.7423, recall=0.8642, train/CV F1 gap=0.0630 [SELECTED]
+  RBF-SVM + MLP + Random Forest: F1=0.8008, F1 SD=0.0347, accuracy=0.8481, precision=0.7483, recall=0.8615, train/CV F1 gap=0.0687
+
+TEST:TRAIN 10:90
+------------------------------------------------------------------------
+Logistic Regression
+  CV (3-fold) accuracy=0.8335, F1=0.7561, precision=0.7846, recall=0.7295, train-F1=0.7602, train/CV F1 gap=0.0041
+  Holdout accuracy=0.8140, F1=0.7436, precision=0.7250, recall=0.7632
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[117, 22], [18, 58]]
+  Best settings: {'classifier__C': 10.0, 'classifier__class_weight': None}
+Decision Tree
+  CV (3-fold) accuracy=0.7384, F1=0.6620, precision=0.6122, recall=0.7222, train-F1=0.7450, train/CV F1 gap=0.0830
+  Holdout accuracy=0.7395, F1=0.6543, precision=0.6163, recall=0.6974
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[106, 33], [23, 53]]
+  Best settings: {'classifier__class_weight': 'balanced', 'classifier__max_depth': 4, 'classifier__min_samples_leaf': 15}
+Random Forest
+  CV (3-fold) accuracy=0.8051, F1=0.7442, precision=0.6950, recall=0.8012, train-F1=0.8342, train/CV F1 gap=0.0900
+  Holdout accuracy=0.8093, F1=0.7602, precision=0.6842, recall=0.8553
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[109, 30], [11, 65]]
+  Best settings: {'classifier__class_weight': 'balanced_subsample', 'classifier__max_depth': 6, 'classifier__max_features': 'sqrt', 'classifier__min_samples_leaf': 15, 'classifier__n_estimators': 200}
+XGBoost
+  CV (3-fold) accuracy=0.8009, F1=0.7395, precision=0.6890, recall=0.7982, train-F1=0.8321, train/CV F1 gap=0.0926
+  Holdout accuracy=0.7907, F1=0.7368, precision=0.6632, recall=0.8289
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[107, 32], [13, 63]]
+  Best settings: {'classifier__learning_rate': 0.07, 'classifier__max_depth': 2, 'classifier__n_estimators': 120, 'classifier__scale_pos_weight': 1.827485380116959}
+Stacking Ensemble — stacking candidate: LR + RBF-SVM + MLP
+  CV (3-fold) accuracy=0.8449, F1=0.7965, precision=0.7482, recall=0.8523, train-F1=0.8524, train/CV F1 gap=0.0559
+  Holdout accuracy=0.8419, F1=0.7976, precision=0.7283, recall=0.8816
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[114, 25], [9, 67]]
+  Best settings: LogisticRegression meta-learner; candidate=LR + RBF-SVM + MLP
+Stacking candidate CV comparison (one-SE/gap rule):
+  LR + RBF-SVM + shallow DT: F1=0.7883, F1 SD=0.0690, accuracy=0.8382, precision=0.7395, recall=0.8450, train/CV F1 gap=0.0643
+  LR + RBF-SVM + MLP: F1=0.7965, F1 SD=0.0638, accuracy=0.8449, precision=0.7482, recall=0.8523, train/CV F1 gap=0.0559 [SELECTED]
+  RBF-SVM + MLP + Random Forest: F1=0.7949, F1 SD=0.0644, accuracy=0.8444, precision=0.7500, recall=0.8465, train/CV F1 gap=0.0649
+
+TEST:TRAIN 20:80
+------------------------------------------------------------------------
+Logistic Regression
+  CV (3-fold) accuracy=0.8319, F1=0.7779, precision=0.7326, recall=0.8306, train-F1=0.7805, train/CV F1 gap=0.0025
+  Holdout accuracy=0.8047, F1=0.7529, precision=0.6809, recall=0.8421
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[218, 60], [24, 128]]
+  Best settings: {'classifier__C': 0.1, 'classifier__class_weight': 'balanced'}
+Decision Tree
+  CV (3-fold) accuracy=0.7022, F1=0.6280, precision=0.5658, recall=0.7187, train-F1=0.6623, train/CV F1 gap=0.0344
+  Holdout accuracy=0.6442, F1=0.6259, precision=0.4981, recall=0.8421
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[149, 129], [24, 128]]
+  Best settings: {'classifier__class_weight': 'balanced', 'classifier__max_depth': 2, 'classifier__min_samples_leaf': 5}
+Random Forest
+  CV (3-fold) accuracy=0.8028, F1=0.7329, precision=0.7036, recall=0.7648, train-F1=0.8404, train/CV F1 gap=0.1075
+  Holdout accuracy=0.8047, F1=0.7485, precision=0.6868, recall=0.8224
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[221, 57], [27, 125]]
+  Best settings: {'classifier__class_weight': 'balanced_subsample', 'classifier__max_depth': 6, 'classifier__max_features': 'sqrt', 'classifier__min_samples_leaf': 15, 'classifier__n_estimators': 200}
+XGBoost
+  CV (3-fold) accuracy=0.8098, F1=0.7432, precision=0.7115, recall=0.7780, train-F1=0.8367, train/CV F1 gap=0.0935
+  Holdout accuracy=0.7930, F1=0.7405, precision=0.6649, recall=0.8355
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[214, 64], [25, 127]]
+  Best settings: {'classifier__learning_rate': 0.07, 'classifier__max_depth': 2, 'classifier__n_estimators': 120, 'classifier__scale_pos_weight': 1.8273026315789473}
+Stacking Ensemble — stacking candidate: LR + RBF-SVM + MLP
+  CV (3-fold) accuracy=0.8453, F1=0.7982, precision=0.7449, recall=0.8619, train-F1=0.8535, train/CV F1 gap=0.0553
+  Holdout accuracy=0.8279, F1=0.7811, precision=0.7097, recall=0.8684
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[224, 54], [20, 132]]
+  Best settings: LogisticRegression meta-learner; candidate=LR + RBF-SVM + MLP
+Stacking candidate CV comparison (one-SE/gap rule):
+  LR + RBF-SVM + shallow DT: F1=0.7956, F1 SD=0.0255, accuracy=0.8429, precision=0.7416, recall=0.8602, train/CV F1 gap=0.0597
+  LR + RBF-SVM + MLP: F1=0.7982, F1 SD=0.0233, accuracy=0.8453, precision=0.7449, recall=0.8619, train/CV F1 gap=0.0553 [SELECTED]
+  RBF-SVM + MLP + Random Forest: F1=0.7977, F1 SD=0.0338, accuracy=0.8441, precision=0.7432, recall=0.8635, train/CV F1 gap=0.0738
+
+TEST:TRAIN 30:70
+------------------------------------------------------------------------
+Logistic Regression
+  CV (3-fold) accuracy=0.8158, F1=0.7589, precision=0.7074, recall=0.8196, train-F1=0.7804, train/CV F1 gap=0.0215
+  Holdout accuracy=0.8140, F1=0.7656, precision=0.6901, recall=0.8596
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[329, 88], [32, 196]]
+  Best settings: {'classifier__C': 10.0, 'classifier__class_weight': 'balanced'}
+Decision Tree
+  CV (3-fold) accuracy=0.7095, F1=0.6392, precision=0.5796, recall=0.7479, train-F1=0.6613, train/CV F1 gap=0.0221
+  Holdout accuracy=0.7132, F1=0.6039, precision=0.5900, recall=0.6184
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[319, 98], [87, 141]]
+  Best settings: {'classifier__class_weight': 'balanced', 'classifier__max_depth': 2, 'classifier__min_samples_leaf': 5}
+Random Forest
+  CV (3-fold) accuracy=0.8039, F1=0.7385, precision=0.6957, recall=0.7876, train-F1=0.8354, train/CV F1 gap=0.0969
+  Holdout accuracy=0.7845, F1=0.7134, precision=0.6732, recall=0.7588
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[333, 84], [55, 173]]
+  Best settings: {'classifier__class_weight': 'balanced_subsample', 'classifier__max_depth': 6, 'classifier__max_features': 0.8, 'classifier__min_samples_leaf': 15, 'classifier__n_estimators': 200}
+XGBoost
+  CV (3-fold) accuracy=0.7886, F1=0.7330, precision=0.6608, recall=0.8233, train-F1=0.8017, train/CV F1 gap=0.0687
+  Holdout accuracy=0.7845, F1=0.7192, precision=0.6667, recall=0.7807
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[328, 89], [50, 178]]
+  Best settings: {'classifier__learning_rate': 0.07, 'classifier__max_depth': 2, 'classifier__n_estimators': 60, 'classifier__scale_pos_weight': 1.8270676691729324}
+Stacking Ensemble — stacking candidate: LR + RBF-SVM + shallow DT
+  CV (3-fold) accuracy=0.8331, F1=0.7807, precision=0.7278, recall=0.8422, train-F1=0.8647, train/CV F1 gap=0.0840
+  Holdout accuracy=0.8264, F1=0.7778, precision=0.7101, recall=0.8596
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[337, 80], [32, 196]]
+  Best settings: LogisticRegression meta-learner; candidate=LR + RBF-SVM + shallow DT
+Stacking candidate CV comparison (one-SE/gap rule):
+  LR + RBF-SVM + shallow DT: F1=0.7807, F1 SD=0.0544, accuracy=0.8331, precision=0.7278, recall=0.8422, train/CV F1 gap=0.0840 [SELECTED]
+  LR + RBF-SVM + MLP: F1=0.7794, F1 SD=0.0601, accuracy=0.8325, precision=0.7282, recall=0.8385, train/CV F1 gap=0.0859
+  RBF-SVM + MLP + Random Forest: F1=0.7765, F1 SD=0.0556, accuracy=0.8311, precision=0.7277, recall=0.8328, train/CV F1 gap=0.1079
+
+TEST:TRAIN 40:60
+------------------------------------------------------------------------
+Logistic Regression
+  CV (3-fold) accuracy=0.8441, F1=0.7737, precision=0.7968, recall=0.7522, train-F1=0.7808, train/CV F1 gap=0.0071
+  Holdout accuracy=0.8279, F1=0.7542, precision=0.7617, recall=0.7467
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[485, 71], [77, 227]]
+  Best settings: {'classifier__C': 10.0, 'classifier__class_weight': None}
+Decision Tree
+  CV (3-fold) accuracy=0.7703, F1=0.6808, precision=0.6643, recall=0.6996, train-F1=0.7668, train/CV F1 gap=0.0860
+  Holdout accuracy=0.7256, F1=0.6266, precision=0.6037, recall=0.6513
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[426, 130], [106, 198]]
+  Best settings: {'classifier__class_weight': None, 'classifier__max_depth': 4, 'classifier__min_samples_leaf': 15}
+Random Forest
+  CV (3-fold) accuracy=0.8099, F1=0.7426, precision=0.7078, recall=0.7851, train-F1=0.8423, train/CV F1 gap=0.0996
+  Holdout accuracy=0.8058, F1=0.7450, precision=0.6952, recall=0.8026
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[449, 107], [60, 244]]
+  Best settings: {'classifier__class_weight': 'balanced_subsample', 'classifier__max_depth': 6, 'classifier__max_features': 'sqrt', 'classifier__min_samples_leaf': 15, 'classifier__n_estimators': 200}
+XGBoost
+  CV (3-fold) accuracy=0.8146, F1=0.7566, precision=0.7063, recall=0.8158, train-F1=0.8646, train/CV F1 gap=0.1079
+  Holdout accuracy=0.8012, F1=0.7496, precision=0.6755, recall=0.8421
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[433, 123], [48, 256]]
+  Best settings: {'classifier__learning_rate': 0.07, 'classifier__max_depth': 2, 'classifier__n_estimators': 120, 'classifier__scale_pos_weight': 1.8267543859649122}
+Stacking Ensemble — stacking candidate: LR + RBF-SVM + shallow DT
+  CV (3-fold) accuracy=0.8441, F1=0.7965, precision=0.7411, recall=0.8618, train-F1=0.8506, train/CV F1 gap=0.0541
+  Holdout accuracy=0.8302, F1=0.7795, precision=0.7207, recall=0.8487
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[456, 100], [46, 258]]
+  Best settings: LogisticRegression meta-learner; candidate=LR + RBF-SVM + shallow DT
+Stacking candidate CV comparison (one-SE/gap rule):
+  LR + RBF-SVM + shallow DT: F1=0.7965, F1 SD=0.0242, accuracy=0.8441, precision=0.7411, recall=0.8618, train/CV F1 gap=0.0541 [SELECTED]
+  LR + RBF-SVM + MLP: F1=0.7967, F1 SD=0.0245, accuracy=0.8448, precision=0.7430, recall=0.8596, train/CV F1 gap=0.0544
+  RBF-SVM + MLP + Random Forest: F1=0.7920, F1 SD=0.0235, accuracy=0.8433, precision=0.7464, recall=0.8443, train/CV F1 gap=0.0799
+
+TEST:TRAIN 50:50
+------------------------------------------------------------------------
+Logistic Regression
+  CV (3-fold) accuracy=0.8156, F1=0.7567, precision=0.7089, recall=0.8133, train-F1=0.7822, train/CV F1 gap=0.0255
+  Holdout accuracy=0.8214, F1=0.7698, precision=0.7070, recall=0.8447
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[562, 133], [59, 321]]
+  Best settings: {'classifier__C': 10.0, 'classifier__class_weight': 'balanced'}
+Decision Tree
+  CV (3-fold) accuracy=0.7374, F1=0.6664, precision=0.6124, recall=0.7342, train-F1=0.7502, train/CV F1 gap=0.0838
+  Holdout accuracy=0.6995, F1=0.6309, precision=0.5576, recall=0.7263
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[476, 219], [104, 276]]
+  Best settings: {'classifier__class_weight': 'balanced', 'classifier__max_depth': 4, 'classifier__min_samples_leaf': 15}
+Random Forest
+  CV (3-fold) accuracy=0.8194, F1=0.7536, precision=0.7312, recall=0.7818, train-F1=0.8668, train/CV F1 gap=0.1132
+  Holdout accuracy=0.8019, F1=0.7314, precision=0.7022, recall=0.7632
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[572, 123], [90, 290]]
+  Best settings: {'classifier__class_weight': 'balanced_subsample', 'classifier__max_depth': 6, 'classifier__max_features': 'sqrt', 'classifier__min_samples_leaf': 15, 'classifier__n_estimators': 200}
+XGBoost
+  CV (3-fold) accuracy=0.8073, F1=0.7369, precision=0.7158, recall=0.7606, train-F1=0.8962, train/CV F1 gap=0.1593
+  Holdout accuracy=0.7814, F1=0.7152, precision=0.6629, recall=0.7763
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[545, 150], [85, 295]]
+  Best settings: {'classifier__learning_rate': 0.03, 'classifier__max_depth': 3, 'classifier__n_estimators': 120, 'classifier__scale_pos_weight': 1.8263157894736841}
+Stacking Ensemble — stacking candidate: LR + RBF-SVM + shallow DT
+  CV (3-fold) accuracy=0.8268, F1=0.7763, precision=0.7182, recall=0.8475, train-F1=0.8612, train/CV F1 gap=0.0849
+  Holdout accuracy=0.8270, F1=0.7764, precision=0.7146, recall=0.8500
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[566, 129], [57, 323]]
+  Best settings: LogisticRegression meta-learner; candidate=LR + RBF-SVM + shallow DT
+Stacking candidate CV comparison (one-SE/gap rule):
+  LR + RBF-SVM + shallow DT: F1=0.7763, F1 SD=0.0283, accuracy=0.8268, precision=0.7182, recall=0.8475, train/CV F1 gap=0.0849 [SELECTED]
+  LR + RBF-SVM + MLP: F1=0.7757, F1 SD=0.0230, accuracy=0.8268, precision=0.7190, recall=0.8449, train/CV F1 gap=0.0882
+  RBF-SVM + MLP + Random Forest: F1=0.7696, F1 SD=0.0348, accuracy=0.8203, precision=0.7080, recall=0.8448, train/CV F1 gap=0.1279
+
+TEST:TRAIN 70:30
+------------------------------------------------------------------------
+Logistic Regression
+  CV (3-fold) accuracy=0.7950, F1=0.7326, precision=0.6823, recall=0.7982, train-F1=0.7984, train/CV F1 gap=0.0658
+  Holdout accuracy=0.8073, F1=0.7538, precision=0.6873, recall=0.8346
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[771, 202], [88, 444]]
+  Best settings: {'classifier__C': 0.1, 'classifier__class_weight': 'balanced'}
+Decision Tree
+  CV (3-fold) accuracy=0.7562, F1=0.6775, precision=0.6394, recall=0.7237, train-F1=0.7834, train/CV F1 gap=0.1059
+  Holdout accuracy=0.7449, F1=0.6547, precision=0.6276, recall=0.6842
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[757, 216], [168, 364]]
+  Best settings: {'classifier__class_weight': 'balanced', 'classifier__max_depth': 4, 'classifier__min_samples_leaf': 5}
+Random Forest
+  CV (3-fold) accuracy=0.8028, F1=0.7236, precision=0.7205, recall=0.7368, train-F1=0.8931, train/CV F1 gap=0.1695
+  Holdout accuracy=0.8093, F1=0.7360, precision=0.7207, recall=0.7519
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[818, 155], [132, 400]]
+  Best settings: {'classifier__class_weight': 'balanced_subsample', 'classifier__max_depth': 6, 'classifier__max_features': 0.8, 'classifier__min_samples_leaf': 8, 'classifier__n_estimators': 200}
+XGBoost
+  CV (3-fold) accuracy=0.7888, F1=0.7269, precision=0.6753, recall=0.7939, train-F1=0.8471, train/CV F1 gap=0.1202
+  Holdout accuracy=0.7887, F1=0.7156, precision=0.6826, recall=0.7519
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[787, 186], [132, 400]]
+  Best settings: {'classifier__learning_rate': 0.03, 'classifier__max_depth': 2, 'classifier__n_estimators': 120, 'classifier__scale_pos_weight': 1.8245614035087718}
+Stacking Ensemble — stacking candidate: LR + RBF-SVM + MLP
+  CV (3-fold) accuracy=0.8043, F1=0.7482, precision=0.6908, recall=0.8246, train-F1=0.8756, train/CV F1 gap=0.1274
+  Holdout accuracy=0.8233, F1=0.7761, precision=0.7027, recall=0.8665
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[778, 195], [71, 461]]
+  Best settings: LogisticRegression meta-learner; candidate=LR + RBF-SVM + MLP
+Stacking candidate CV comparison (one-SE/gap rule):
+  LR + RBF-SVM + shallow DT: F1=0.7447, F1 SD=0.0207, accuracy=0.7997, precision=0.6856, recall=0.8246, train/CV F1 gap=0.1281
+  LR + RBF-SVM + MLP: F1=0.7482, F1 SD=0.0269, accuracy=0.8043, precision=0.6908, recall=0.8246, train/CV F1 gap=0.1274 [SELECTED]
+  RBF-SVM + MLP + Random Forest: F1=0.7263, F1 SD=0.0249, accuracy=0.7857, precision=0.6658, recall=0.8070, train/CV F1 gap=0.1633
+
+TEST:TRAIN 80:20
+------------------------------------------------------------------------
+Logistic Regression
+  CV (3-fold) accuracy=0.7972, F1=0.7378, precision=0.6845, recall=0.8025, train-F1=0.7913, train/CV F1 gap=0.0535
+  Holdout accuracy=0.8000, F1=0.7440, precision=0.6793, recall=0.8224
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[876, 236], [108, 500]]
+  Best settings: {'classifier__C': 1.0, 'classifier__class_weight': 'balanced'}
+Decision Tree
+  CV (3-fold) accuracy=0.6970, F1=0.5793, precision=0.5704, recall=0.5923, train-F1=0.6730, train/CV F1 gap=0.0937
+  Holdout accuracy=0.6988, F1=0.6129, precision=0.5616, recall=0.6743
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[792, 320], [198, 410]]
+  Best settings: {'classifier__class_weight': 'balanced', 'classifier__max_depth': 2, 'classifier__min_samples_leaf': 5}
+Random Forest
+  CV (3-fold) accuracy=0.8019, F1=0.7227, precision=0.7174, recall=0.7299, train-F1=0.9245, train/CV F1 gap=0.2018
+  Holdout accuracy=0.7988, F1=0.7201, precision=0.7086, recall=0.7319
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[929, 183], [163, 445]]
+  Best settings: {'classifier__class_weight': 'balanced_subsample', 'classifier__max_depth': 6, 'classifier__max_features': 'sqrt', 'classifier__min_samples_leaf': 8, 'classifier__n_estimators': 200}
+XGBoost
+  CV (3-fold) accuracy=0.7902, F1=0.7092, precision=0.6969, recall=0.7234, train-F1=0.9739, train/CV F1 gap=0.2647
+  Holdout accuracy=0.7872, F1=0.7095, precision=0.6856, recall=0.7352
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[907, 205], [161, 447]]
+  Best settings: {'classifier__learning_rate': 0.07, 'classifier__max_depth': 3, 'classifier__n_estimators': 60, 'classifier__scale_pos_weight': 1.8223684210526316}
+Stacking Ensemble — stacking candidate: LR + RBF-SVM + MLP
+  CV (3-fold) accuracy=0.8112, F1=0.7558, precision=0.7013, recall=0.8224, train-F1=0.8700, train/CV F1 gap=0.1142
+  Holdout accuracy=0.8105, F1=0.7571, precision=0.6921, recall=0.8355
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[886, 226], [100, 508]]
+  Best settings: LogisticRegression meta-learner; candidate=LR + RBF-SVM + MLP
+Stacking candidate CV comparison (one-SE/gap rule):
+  LR + RBF-SVM + shallow DT: F1=0.7362, F1 SD=0.0070, accuracy=0.7925, precision=0.6725, recall=0.8156, train/CV F1 gap=0.1357
+  LR + RBF-SVM + MLP: F1=0.7558, F1 SD=0.0219, accuracy=0.8112, precision=0.7013, recall=0.8224, train/CV F1 gap=0.1142 [SELECTED]
+  RBF-SVM + MLP + Random Forest: F1=0.7309, F1 SD=0.0136, accuracy=0.7925, precision=0.6768, recall=0.7959, train/CV F1 gap=0.1689
+
+TEST:TRAIN 90:10
+------------------------------------------------------------------------
+Logistic Regression
+  CV (3-fold) accuracy=0.7900, F1=0.7363, precision=0.6712, recall=0.8164, train-F1=0.8346, train/CV F1 gap=0.0983
+  Holdout accuracy=0.7907, F1=0.7344, precision=0.6659, recall=0.8187
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[970, 281], [124, 560]]
+  Best settings: {'classifier__C': 0.1, 'classifier__class_weight': 'balanced'}
+Decision Tree
+  CV (3-fold) accuracy=0.7016, F1=0.6279, precision=0.6022, recall=0.6713, train-F1=0.7297, train/CV F1 gap=0.1018
+  Holdout accuracy=0.6589, F1=0.5901, precision=0.5130, recall=0.6944
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[800, 451], [209, 475]]
+  Best settings: {'classifier__class_weight': 'balanced', 'classifier__max_depth': 2, 'classifier__min_samples_leaf': 15}
+Random Forest
+  CV (3-fold) accuracy=0.7527, F1=0.6602, precision=0.6404, recall=0.6856, train-F1=0.8440, train/CV F1 gap=0.1838
+  Holdout accuracy=0.7473, F1=0.6559, precision=0.6323, recall=0.6813
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[980, 271], [218, 466]]
+  Best settings: {'classifier__class_weight': 'balanced_subsample', 'classifier__max_depth': 6, 'classifier__max_features': 0.8, 'classifier__min_samples_leaf': 15, 'classifier__n_estimators': 200}
+XGBoost
+  CV (3-fold) accuracy=0.7667, F1=0.6965, precision=0.6503, recall=0.7508, train-F1=0.8781, train/CV F1 gap=0.1817
+  Holdout accuracy=0.7359, F1=0.6342, precision=0.6213, recall=0.6477
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[981, 270], [241, 443]]
+  Best settings: {'classifier__learning_rate': 0.03, 'classifier__max_depth': 2, 'classifier__n_estimators': 60, 'classifier__scale_pos_weight': 1.8157894736842106}
+Stacking Ensemble — stacking candidate: LR + RBF-SVM + shallow DT
+  CV (3-fold) accuracy=0.7900, F1=0.7317, precision=0.6719, recall=0.8036, train-F1=0.9211, train/CV F1 gap=0.1893
+  Holdout accuracy=0.7969, F1=0.7406, precision=0.6751, recall=0.8202
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[981, 270], [123, 561]]
+  Best settings: LogisticRegression meta-learner; candidate=LR + RBF-SVM + shallow DT
+Stacking candidate CV comparison (one-SE/gap rule):
+  LR + RBF-SVM + shallow DT: F1=0.7317, F1 SD=0.0938, accuracy=0.7900, precision=0.6719, recall=0.8036, train/CV F1 gap=0.1893 [SELECTED]
+  LR + RBF-SVM + MLP: F1=0.7196, F1 SD=0.0737, accuracy=0.7806, precision=0.6608, recall=0.7903, train/CV F1 gap=0.1897
+  RBF-SVM + MLP + Random Forest: F1=0.7255, F1 SD=0.0713, accuracy=0.7899, precision=0.6819, recall=0.7764, train/CV F1 gap=0.2171
+
+TEST:TRAIN 95:5
+------------------------------------------------------------------------
+Logistic Regression
+  CV (3-fold) accuracy=0.7854, F1=0.7311, precision=0.6640, recall=0.8162, train-F1=0.8935, train/CV F1 gap=0.1624
+  Holdout accuracy=0.7914, F1=0.7276, precision=0.6758, recall=0.7881
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[1047, 273], [153, 569]]
+  Best settings: {'classifier__C': 1.0, 'classifier__class_weight': 'balanced'}
+Decision Tree
+  CV (3-fold) accuracy=0.6735, F1=0.6073, precision=0.5463, recall=0.7073, train-F1=0.8431, train/CV F1 gap=0.2358
+  Holdout accuracy=0.7277, F1=0.6197, precision=0.6122, recall=0.6274
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[1033, 287], [269, 453]]
+  Best settings: {'classifier__class_weight': 'balanced', 'classifier__max_depth': 4, 'classifier__min_samples_leaf': 5}
+Random Forest
+  CV (3-fold) accuracy=0.7479, F1=0.6921, precision=0.6153, recall=0.8120, train-F1=0.8583, train/CV F1 gap=0.1662
+  Holdout accuracy=0.7973, F1=0.7199, precision=0.7037, recall=0.7368
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[1096, 224], [190, 532]]
+  Best settings: {'classifier__class_weight': 'balanced_subsample', 'classifier__max_depth': 6, 'classifier__max_features': 'sqrt', 'classifier__min_samples_leaf': 15, 'classifier__n_estimators': 200}
+XGBoost
+  CV (3-fold) accuracy=0.7206, F1=0.6564, precision=0.5910, recall=0.7393, train-F1=1.0000, train/CV F1 gap=0.3436
+  Holdout accuracy=0.7821, F1=0.6882, precision=0.6965, recall=0.6801
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[1106, 214], [231, 491]]
+  Best settings: {'classifier__learning_rate': 0.07, 'classifier__max_depth': 2, 'classifier__n_estimators': 120, 'classifier__scale_pos_weight': 1.8157894736842106}
+Stacking Ensemble — stacking candidate: LR + RBF-SVM + MLP
+  CV (3-fold) accuracy=0.7204, F1=0.6695, precision=0.5843, recall=0.7906, train-F1=0.9427, train/CV F1 gap=0.2732
+  Holdout accuracy=0.7997, F1=0.7366, precision=0.6883, recall=0.7922
+  Confusion matrix (rows=actual [0,1], columns=predicted [0,1]): [[1061, 259], [150, 572]]
+  Best settings: LogisticRegression meta-learner; candidate=LR + RBF-SVM + MLP
+Stacking candidate CV comparison (one-SE/gap rule):
+  LR + RBF-SVM + shallow DT: F1=0.6603, F1 SD=0.0574, accuracy=0.7108, precision=0.5681, recall=0.7906, train/CV F1 gap=0.2886
+  LR + RBF-SVM + MLP: F1=0.6695, F1 SD=0.0631, accuracy=0.7204, precision=0.5843, recall=0.7906, train/CV F1 gap=0.2732 [SELECTED]
+  RBF-SVM + MLP + Random Forest: F1=0.6379, F1 SD=0.0649, accuracy=0.7196, precision=0.5856, recall=0.7073, train/CV F1 gap=0.2989
+
+INTERPRETATION NOTES
+------------------------------------------------------------------------
+The CV train-F1 minus validation-F1 gap is included as an overfit warning signal; it is not a guarantee of generalization. A 95% test split leaves very little training data, so its estimates are expected to be less stable than those from larger training fractions. The repeated holdout ratios are comparisons, not independent external validation datasets.
