@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import warnings
 from pathlib import Path
 
@@ -10,7 +11,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
+from scipy.spatial.distance import squareform
 from sklearn.base import BaseEstimator, TransformerMixin, clone
+from sklearn.cluster import BisectingKMeans, DBSCAN
 from sklearn.compose import ColumnTransformer
 from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
@@ -22,6 +26,7 @@ from sklearn.metrics import (
     make_scorer,
     precision_score,
     recall_score,
+    silhouette_score,
 )
 from sklearn.model_selection import (
     GridSearchCV,
@@ -58,13 +63,25 @@ TEST_TRAIN_SPLITS = (
     (0.90, "90:10"),
     (0.95, "95:5"),
 )
-MODEL_ORDER = ("Decision Tree", "Random Forest", "XGBoost", "Stacking Ensemble")
+MODEL_ORDER = (
+    "Logistic Regression",
+    "Decision Tree",
+    "Random Forest",
+    "XGBoost",
+    "Stacking Ensemble",
+)
 MODEL_COLORS = {
+    "Logistic Regression": "#E15759",
     "Decision Tree": "#4C78A8",
     "Random Forest": "#59A14F",
     "XGBoost": "#F28E2B",
     "Stacking Ensemble": "#B07AA1",
 }
+FEATURE_CLUSTER_DISTANCE_THRESHOLD = 0.55
+FEATURE_CLUSTER_MIN_CORRELATION = (
+    1 - FEATURE_CLUSTER_DISTANCE_THRESHOLD**2 / 2
+)
+FEATURE_DBSCAN_MIN_SAMPLES = 2
 SCORING = {
     "accuracy": "accuracy",
     "f1": make_scorer(f1_score, zero_division=0),
@@ -91,6 +108,35 @@ def engineer_features(features: pd.DataFrame) -> pd.DataFrame:
         / engineered["CholesterolHDL"].replace(0, np.nan)
     )
     return engineered
+
+
+def make_preprocessor(features: pd.DataFrame) -> ColumnTransformer:
+    engineered_columns = list(engineer_features(features).columns)
+    categorical = [column for column in CATEGORICAL_COLUMNS if column in features]
+    numeric = [column for column in engineered_columns if column not in categorical]
+    return ColumnTransformer(
+        transformers=[
+            ("numeric", SimpleImputer(strategy="median"), numeric),
+            (
+                "categorical",
+                Pipeline(
+                    steps=[
+                        ("imputer", SimpleImputer(strategy="most_frequent")),
+                        (
+                            "onehot",
+                            OneHotEncoder(
+                                handle_unknown="ignore", sparse_output=False
+                            ),
+                        ),
+                    ]
+                ),
+                categorical,
+            ),
+        ],
+        remainder="drop",
+        sparse_threshold=0,
+        verbose_feature_names_out=False,
+    )
 
 
 def select_generalizable_setting(cv_results: dict[str, object]) -> int:
@@ -128,7 +174,7 @@ class LassoFeatureSelector(BaseEstimator, TransformerMixin):
     def fit(self, X: np.ndarray, y: np.ndarray) -> LassoFeatureSelector:
         self.n_features_in_ = X.shape[1]
         self.estimator_ = LassoCV(
-            alphas=self.alphas, cv=3, max_iter=10000, tol=1e-5
+            alphas=self.alphas, cv=3, max_iter=50000, tol=1e-5
         )
         self.estimator_.fit(X, y)
         coefficients = np.abs(self.estimator_.coef_)
@@ -186,74 +232,210 @@ class ClinicalFeatureEngineer(BaseEstimator, TransformerMixin):
         return self.feature_names_out_.copy()
 
 
-def make_feature_pipeline(features: pd.DataFrame) -> Pipeline:
-    engineered_columns = list(engineer_features(features).columns)
-    categorical = [column for column in CATEGORICAL_COLUMNS if column in features]
-    numeric = [column for column in engineered_columns if column not in categorical]
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ("numeric", SimpleImputer(strategy="median"), numeric),
-            (
-                "categorical",
-                Pipeline(
-                    steps=[
-                        ("imputer", SimpleImputer(strategy="most_frequent")),
-                        (
-                            "onehot",
-                            OneHotEncoder(
-                                handle_unknown="ignore", sparse_output=False
-                            ),
-                        ),
-                    ]
-                ),
-                categorical,
-            ),
-        ],
-        remainder="drop",
-        sparse_threshold=0,
-        verbose_feature_names_out=False,
-    )
-    return Pipeline(
-        steps=[
-            ("engineer", ClinicalFeatureEngineer()),
-            ("preprocess", preprocessor),
-            ("scale", StandardScaler()),
-            (
-                "lasso",
-                LassoFeatureSelector(
-                    alphas=LASSO_ALPHA_CANDIDATES,
-                    threshold=LASSO_THRESHOLD,
-                ),
-            ),
-            ("pca", PCA(n_components=PCA_VARIANCE, svd_solver="full")),
+class ClusterConsensusFeatureSelector(BaseEstimator, TransformerMixin):
+    """Keep one target-associated feature from clusters agreed on by 2 methods."""
+
+    def __init__(
+        self,
+        distance_threshold: float = FEATURE_CLUSTER_DISTANCE_THRESHOLD,
+        dbscan_min_samples: int = FEATURE_DBSCAN_MIN_SAMPLES,
+        random_state: int = RANDOM_STATE,
+    ):
+        self.distance_threshold = distance_threshold
+        self.dbscan_min_samples = dbscan_min_samples
+        self.random_state = random_state
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> ClusterConsensusFeatureSelector:
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y, dtype=float)
+        self.n_features_in_ = X.shape[1]
+        if self.n_features_in_ < 2:
+            self.support_ = np.ones(self.n_features_in_, dtype=bool)
+            self.method_labels_ = {
+                "agglomerative": np.zeros(self.n_features_in_, dtype=int),
+                "divisive": np.zeros(self.n_features_in_, dtype=int),
+                "dbscan": np.full(self.n_features_in_, -1, dtype=int),
+            }
+            self.correlation_ = np.eye(self.n_features_in_)
+            self.target_association_ = np.zeros(self.n_features_in_)
+            self.selected_clusters_ = []
+            self.divisive_cluster_count_ = self.n_features_in_
+            return self
+
+        correlation = np.corrcoef(X, rowvar=False)
+        correlation = np.nan_to_num(correlation, nan=0.0, posinf=0.0, neginf=0.0)
+        correlation = np.clip(correlation, -1.0, 1.0)
+        np.fill_diagonal(correlation, 1.0)
+        absolute_correlation = np.abs(correlation)
+        distance = np.sqrt(np.maximum(0.0, 2.0 * (1.0 - absolute_correlation)))
+        np.fill_diagonal(distance, 0.0)
+
+        hierarchy = linkage(
+            squareform(distance, checks=False),
+            method="average",
+        )
+        agglomerative_labels = fcluster(
+            hierarchy,
+            t=self.distance_threshold,
+            criterion="distance",
+        )
+
+        similarity_profiles = absolute_correlation
+        max_clusters = min(5, self.n_features_in_)
+        divisive_models: dict[int, tuple[BisectingKMeans, float]] = {}
+        for cluster_count in range(2, max_clusters + 1):
+            model = BisectingKMeans(
+                n_clusters=cluster_count,
+                n_init=3,
+                random_state=self.random_state,
+                bisecting_strategy="biggest_inertia",
+            )
+            labels = model.fit_predict(similarity_profiles)
+            if np.unique(labels).size < 2:
+                continue
+            score = float(silhouette_score(similarity_profiles, labels))
+            divisive_models[cluster_count] = (model, score)
+        if not divisive_models:
+            raise ValueError(
+                "Bisecting clustering could not form multiple feature groups."
+            )
+        best_cluster_count = max(
+            divisive_models,
+            key=lambda count: (divisive_models[count][1], -count),
+        )
+        divisive_labels = divisive_models[best_cluster_count][0].labels_
+
+        dbscan_labels = DBSCAN(
+            eps=self.distance_threshold,
+            min_samples=self.dbscan_min_samples,
+            metric="precomputed",
+        ).fit_predict(distance)
+        self.method_labels_ = {
+            "agglomerative": agglomerative_labels,
+            "divisive": divisive_labels,
+            "dbscan": dbscan_labels,
+        }
+        self.correlation_ = correlation
+        self.target_association_ = np.nan_to_num(
+            np.abs(np.corrcoef(X, y, rowvar=False)[:-1, -1]),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+        self.divisive_cluster_count_ = best_cluster_count
+        self.divisive_silhouette_ = divisive_models[best_cluster_count][1]
+
+        parent = list(range(self.n_features_in_))
+
+        def find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        def union(first: int, second: int) -> None:
+            first_root = find(first)
+            second_root = find(second)
+            if first_root != second_root:
+                parent[second_root] = first_root
+
+        for first in range(self.n_features_in_):
+            for second in range(first + 1, self.n_features_in_):
+                if absolute_correlation[first, second] < (
+                    1 - self.distance_threshold**2 / 2
+                ):
+                    continue
+                agreement = sum(
+                    labels[first] == labels[second]
+                    and not (
+                        method == "dbscan" and labels[first] == -1
+                    )
+                    for method, labels in self.method_labels_.items()
+                )
+                if agreement >= 2:
+                    union(first, second)
+
+        grouped: dict[int, list[int]] = {}
+        for index in range(self.n_features_in_):
+            grouped.setdefault(find(index), []).append(index)
+        self.selected_clusters_ = [
+            indices for indices in grouped.values() if len(indices) > 1
         ]
-    )
+        self.support_ = np.ones(self.n_features_in_, dtype=bool)
+        for indices in self.selected_clusters_:
+            representative = max(
+                indices, key=lambda index: self.target_association_[index]
+            )
+            for index in indices:
+                self.support_[index] = index == representative
+        return self
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        return np.asarray(X)[:, self.support_]
+
+    def get_support(self) -> np.ndarray:
+        return self.support_.copy()
+
+
+def make_feature_pipeline(
+    features: pd.DataFrame, use_feature_selection: bool = True
+) -> Pipeline:
+    steps = [
+        ("engineer", ClinicalFeatureEngineer()),
+        ("preprocess", make_preprocessor(features)),
+        ("scale", StandardScaler()),
+    ]
+    if use_feature_selection:
+        steps.extend(
+            [
+                ("cluster_select", ClusterConsensusFeatureSelector()),
+                (
+                    "lasso",
+                    LassoFeatureSelector(
+                        alphas=LASSO_ALPHA_CANDIDATES,
+                        threshold=LASSO_THRESHOLD,
+                    ),
+                ),
+                ("pca", PCA(n_components=PCA_VARIANCE, svd_solver="full")),
+            ]
+        )
+    return Pipeline(steps=steps)
 
 
 def make_model_pipeline(
-    features: pd.DataFrame, classifier: BaseEstimator
+    features: pd.DataFrame,
+    classifier: BaseEstimator,
+    use_feature_selection: bool = True,
 ) -> Pipeline:
     return Pipeline(
         steps=[
-            ("features", make_feature_pipeline(features)),
+            (
+                "features",
+                make_feature_pipeline(features, use_feature_selection),
+            ),
             ("classifier", classifier),
         ]
     )
 
 
 def get_model_searches(
-    features: pd.DataFrame, y_train: pd.Series
+    features: pd.DataFrame,
+    y_train: pd.Series,
+    use_feature_selection: bool = True,
 ) -> dict[str, tuple[Pipeline, dict[str, list[object]]]]:
     negative_count = int((y_train == 0).sum())
     positive_count = int((y_train == 1).sum())
     positive_weight = negative_count / positive_count
 
     tree = make_model_pipeline(
-        features, DecisionTreeClassifier(random_state=RANDOM_STATE)
+        features,
+        DecisionTreeClassifier(random_state=RANDOM_STATE),
+        use_feature_selection,
     )
     forest = make_model_pipeline(
         features,
         RandomForestClassifier(random_state=RANDOM_STATE, n_jobs=1),
+        use_feature_selection,
     )
     xgboost = make_model_pipeline(
         features,
@@ -265,8 +447,20 @@ def get_model_searches(
             n_jobs=1,
             verbosity=0,
         ),
+        use_feature_selection,
     )
     return {
+        "Logistic Regression": (
+            make_model_pipeline(
+                features,
+                LogisticRegression(max_iter=2000, random_state=RANDOM_STATE),
+                use_feature_selection,
+            ),
+            {
+                "classifier__C": [0.1, 1.0, 10.0],
+                "classifier__class_weight": [None, "balanced"],
+            },
+        ),
         "Decision Tree": (
             tree,
             {
@@ -298,7 +492,10 @@ def get_model_searches(
 
 
 def make_stack_candidate(
-    name: str, features: pd.DataFrame, seed: int
+    name: str,
+    features: pd.DataFrame,
+    seed: int,
+    use_feature_selection: bool = True,
 ) -> StackingClassifier:
     base_models: dict[str, BaseEstimator] = {
         "lr": LogisticRegression(
@@ -345,7 +542,11 @@ def make_stack_candidate(
     estimators = [
         (
             model_name,
-            make_model_pipeline(features, clone(base_models[model_name])),
+            make_model_pipeline(
+                features,
+                clone(base_models[model_name]),
+                use_feature_selection,
+            ),
         )
         for model_name in combinations[name]
     ]
@@ -371,13 +572,14 @@ def fit_and_score_models(
     y_test: pd.Series,
     test_label: str,
     seed: int,
+    use_feature_selection: bool = True,
 ) -> tuple[list[dict[str, object]], dict[str, np.ndarray], list[dict[str, object]]]:
     cv = StratifiedKFold(n_splits=CV_SPLITS, shuffle=True, random_state=seed)
     records: list[dict[str, object]] = []
     matrices: dict[str, np.ndarray] = {}
 
     for model_name, (pipeline, parameter_grid) in get_model_searches(
-        X_train, y_train
+        X_train, y_train, use_feature_selection
     ).items():
         search = GridSearchCV(
             estimator=pipeline,
@@ -431,7 +633,9 @@ def fit_and_score_models(
         "RBF-SVM + MLP + Random Forest",
     )
     for candidate_name in candidate_names:
-        ensemble = make_stack_candidate(candidate_name, X_train, seed)
+        ensemble = make_stack_candidate(
+            candidate_name, X_train, seed, use_feature_selection
+        )
         scores = cross_validate(
             ensemble,
             X_train,
@@ -481,7 +685,9 @@ def fit_and_score_models(
         for metric in SCORING
     }
     selected_candidate["selected"] = True
-    ensemble = make_stack_candidate(best_candidate_name, X_train, seed)
+    ensemble = make_stack_candidate(
+        best_candidate_name, X_train, seed, use_feature_selection
+    )
     ensemble.fit(X_train, y_train)
     predictions = ensemble.predict(X_test)
     matrix = confusion_matrix(y_test, predictions, labels=[0, 1])
@@ -538,37 +744,18 @@ def create_feature_selection_diagnostics(
     X: pd.DataFrame, y: pd.Series, output_dir: Path
 ) -> dict[str, object]:
     engineered = engineer_features(X)
-    categorical = [column for column in CATEGORICAL_COLUMNS if column in X]
-    numeric = [column for column in engineered if column not in categorical]
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ("numeric", SimpleImputer(strategy="median"), numeric),
-            (
-                "categorical",
-                Pipeline(
-                    steps=[
-                        ("imputer", SimpleImputer(strategy="most_frequent")),
-                        (
-                            "onehot",
-                            OneHotEncoder(
-                                handle_unknown="ignore", sparse_output=False
-                            ),
-                        ),
-                    ]
-                ),
-                categorical,
-            ),
-        ],
-        remainder="drop",
-        sparse_threshold=0,
-        verbose_feature_names_out=False,
-    )
+    preprocessor = make_preprocessor(X)
     prepared = preprocessor.fit_transform(engineered)
     scaled = StandardScaler().fit_transform(prepared)
     feature_names = preprocessor.get_feature_names_out()
+    cluster_selector, cluster_diagnostics = create_cluster_feature_diagnostics(
+        scaled, feature_names, y.to_numpy(), output_dir
+    )
+    cluster_selected_names = feature_names[cluster_selector.get_support()]
+    cluster_selected_data = cluster_selector.transform(scaled)
     selector = LassoFeatureSelector()
-    lasso_data = selector.fit_transform(scaled, y.to_numpy())
-    selected_names = selector.get_feature_names_out(feature_names)
+    lasso_data = selector.fit_transform(cluster_selected_data, y.to_numpy())
+    selected_names = selector.get_feature_names_out(cluster_selected_names)
     selected_coefficients = selector.estimator_.coef_[selector.get_support()]
     pca = PCA(n_components=PCA_VARIANCE, svd_solver="full")
     pca_data = pca.fit_transform(lasso_data)
@@ -641,6 +828,8 @@ def create_feature_selection_diagnostics(
         "raw_predictor_count": int(X.shape[1]),
         "engineered_predictor_count": int(engineered.shape[1]),
         "encoded_scaled_feature_count": int(prepared.shape[1]),
+        "cluster_selected_count": int(cluster_selected_data.shape[1]),
+        "cluster_selected_features": cluster_selected_names.tolist(),
         "lasso_selected_count": int(lasso_data.shape[1]),
         "lasso_alpha": float(selector.estimator_.alpha_),
         "pca_component_count": int(pca_data.shape[1]),
@@ -649,7 +838,167 @@ def create_feature_selection_diagnostics(
         ),
         "lasso_features": lasso_frame,
         "pca_components": component_frame,
+        **cluster_diagnostics,
     }
+
+
+def create_cluster_feature_diagnostics(
+    scaled_features: np.ndarray,
+    feature_names: np.ndarray,
+    y: np.ndarray,
+    output_dir: Path,
+) -> tuple[ClusterConsensusFeatureSelector, dict[str, object]]:
+    selector = ClusterConsensusFeatureSelector().fit(scaled_features, y)
+    labels = selector.method_labels_
+    distance = np.sqrt(
+        np.maximum(
+            0.0,
+            2.0 * (1.0 - np.abs(selector.correlation_)),
+        )
+    )
+    np.fill_diagonal(distance, 0.0)
+    hierarchy = linkage(
+        squareform(distance, checks=False),
+        method="average",
+    )
+    distance_threshold = selector.distance_threshold
+    feature_labels = [str(name) for name in feature_names]
+
+    fig, ax = plt.subplots(figsize=(max(14, len(feature_labels) * 0.35), 8))
+    dendrogram(
+        hierarchy,
+        labels=feature_labels,
+        color_threshold=distance_threshold,
+        above_threshold_color="#555555",
+        leaf_rotation=90,
+        leaf_font_size=7,
+        ax=ax,
+    )
+    ax.axhline(
+        distance_threshold,
+        color="#E15759",
+        linestyle="--",
+        linewidth=2.2,
+        label=(
+            f"Feature-cluster cut = {distance_threshold:.2f} "
+            f"(|correlation| >= {FEATURE_CLUSTER_MIN_CORRELATION:.2f})"
+        ),
+    )
+    ax.set_title("Agglomerative feature clustering — average-linkage correlation distance")
+    ax.set_ylabel("Distance: sqrt(2 × (1 − |correlation|))")
+    ax.legend(loc="upper right")
+    ax.grid(axis="y", alpha=0.18)
+    fig.tight_layout()
+    fig.savefig(output_dir / "agglomerative_feature_dendrogram.png", dpi=180)
+    plt.close(fig)
+
+    profile_projection = PCA(n_components=2).fit_transform(
+        np.abs(selector.correlation_)
+    )
+    fig, ax = plt.subplots(figsize=(10, 7))
+    divisive_labels = labels["divisive"]
+    for cluster_id in sorted(np.unique(divisive_labels)):
+        mask = divisive_labels == cluster_id
+        ax.scatter(
+            profile_projection[mask, 0],
+            profile_projection[mask, 1],
+            s=78,
+            alpha=0.82,
+            edgecolors="white",
+            linewidths=0.6,
+            label=f"Cluster {cluster_id} (n={int(mask.sum())})",
+        )
+    ax.set_title(
+        "Divisive feature clustering — Bisecting K-Means\n"
+        f"{selector.divisive_cluster_count_} groups chosen by silhouette score"
+    )
+    ax.set_xlabel("Correlation-profile PC1 (visualization only)")
+    ax.set_ylabel("Correlation-profile PC2 (visualization only)")
+    ax.legend(
+        title="Encoded predictors",
+        bbox_to_anchor=(1.02, 1),
+        loc="upper left",
+        borderaxespad=0,
+        fontsize=8,
+    )
+    ax.grid(alpha=0.2)
+    fig.tight_layout()
+    fig.savefig(output_dir / "divisive_feature_clusters.png", dpi=180)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+    dbscan_labels = labels["dbscan"]
+    for cluster_id in sorted(np.unique(dbscan_labels)):
+        mask = dbscan_labels == cluster_id
+        if cluster_id == -1:
+            color = "#333333"
+            label = f"Noise / ungrouped (n={int(mask.sum())})"
+        else:
+            color = plt.get_cmap("tab10")(int(cluster_id) % 10)
+            label = f"Cluster {cluster_id} (n={int(mask.sum())})"
+        ax.scatter(
+            profile_projection[mask, 0],
+            profile_projection[mask, 1],
+            s=78,
+            alpha=0.82,
+            color=color,
+            edgecolors="white",
+            linewidths=0.6,
+            label=label,
+        )
+    dbscan_cluster_count = len(set(dbscan_labels) - {-1})
+    dbscan_noise_count = int(np.sum(dbscan_labels == -1))
+    ax.set_title(
+        "DBSCAN feature clustering\n"
+        f"eps={distance_threshold:.2f}, min_samples="
+        f"{selector.dbscan_min_samples}; {dbscan_cluster_count} clusters"
+    )
+    ax.set_xlabel("Correlation-profile PC1 (visualization only)")
+    ax.set_ylabel("Correlation-profile PC2 (visualization only)")
+    ax.legend(
+        title="Encoded predictors",
+        bbox_to_anchor=(1.02, 1),
+        loc="upper left",
+        borderaxespad=0,
+        fontsize=8,
+    )
+    ax.grid(alpha=0.2)
+    fig.tight_layout()
+    fig.savefig(output_dir / "dbscan_feature_clusters.png", dpi=180)
+    plt.close(fig)
+
+    assignments = pd.DataFrame(
+        {
+            "feature": feature_labels,
+            "absolute_target_association": selector.target_association_,
+            "agglomerative_cluster": labels["agglomerative"],
+            "divisive_cluster": labels["divisive"],
+            "dbscan_cluster": labels["dbscan"],
+            "consensus_selected": selector.get_support(),
+        }
+    )
+    assignments.to_csv(output_dir / "cluster_feature_selection.csv", index=False)
+    selected_count = int(selector.get_support().sum())
+    diagnostics: dict[str, object] = {
+        "cluster_feature_count": len(feature_labels),
+        "cluster_selected_count": selected_count,
+        "cluster_selected_features": [
+            feature_labels[index]
+            for index in np.flatnonzero(selector.get_support())
+        ],
+        "agglomerative_cluster_count": len(
+            np.unique(labels["agglomerative"])
+        ),
+        "divisive_cluster_count": int(selector.divisive_cluster_count_),
+        "divisive_silhouette_score": float(selector.divisive_silhouette_),
+        "dbscan_cluster_count": dbscan_cluster_count,
+        "dbscan_noise_count": dbscan_noise_count,
+        "consensus_redundant_cluster_count": len(selector.selected_clusters_),
+        "feature_cluster_distance_threshold": distance_threshold,
+        "feature_cluster_min_correlation": FEATURE_CLUSTER_MIN_CORRELATION,
+        "cluster_assignments": assignments,
+    }
+    return selector, diagnostics
 
 
 def plot_accuracy_comparison(
@@ -686,12 +1035,13 @@ def plot_confusion_matrices(
     matrices: dict[str, np.ndarray], test_label: str, output_dir: Path
 ) -> None:
     color_maps = {
+        "Logistic Regression": "Reds",
         "Decision Tree": "Blues",
         "Random Forest": "Greens",
         "XGBoost": "Oranges",
         "Stacking Ensemble": "Purples",
     }
-    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    fig, axes = plt.subplots(2, 3, figsize=(13, 8))
     for ax, model_name in zip(axes.flat, MODEL_ORDER):
         matrix = matrices[model_name]
         row_totals = matrix.sum(axis=1, keepdims=True)
@@ -719,6 +1069,8 @@ def plot_confusion_matrices(
                     fontsize=10,
                     fontweight="bold",
                 )
+    for ax in axes.flat[len(MODEL_ORDER) :]:
+        ax.axis("off")
     fig.suptitle(
         f"Confusion matrices — test:train {test_label}\n"
         "Cells show count and row-normalized percentage",
@@ -735,9 +1087,10 @@ def write_report(
     df: pd.DataFrame,
     X: pd.DataFrame,
     y: pd.Series,
-    diagnostics: dict[str, object],
+    diagnostics: dict[str, object] | None,
     records: list[dict[str, object]],
     candidate_records: list[dict[str, object]],
+    use_feature_selection: bool = True,
 ) -> None:
     lines = [
         "ALZHEIMER'S DIAGNOSIS MODEL EVALUATION",
@@ -746,12 +1099,25 @@ def write_report(
         "the second is the training percentage.",
         "Every ratio uses a stratified holdout split and 3-fold stratified CV "
         "on its training partition.",
-        "Feature engineering, imputation, one-hot encoding, scaling, Lasso "
-        "selection, and PCA are fitted inside each training fold.",
-        "The exploratory feature-selection preview below is fitted on all rows "
-        "for description only; it is not used to score any holdout.",
+        (
+            "Feature engineering, imputation, one-hot encoding, scaling, "
+            "consensus clustering-based feature selection, Lasso selection, "
+            "and PCA are fitted inside each training fold."
+            if use_feature_selection
+            else "Feature engineering, imputation, one-hot encoding, and "
+            "scaling are fitted inside each training fold. No Lasso feature "
+            "selection, PCA, or cluster-based feature selection is applied."
+        ),
+        (
+            "The full-data feature-selection preview below is descriptive "
+            "only; model selection is refitted inside each training fold."
+            if use_feature_selection
+            else "Full-data clustering diagnostics are descriptive only; "
+            "all encoded predictors are used by models, and preprocessing is "
+            "fitted separately inside each CV fold and training split."
+        ),
         "",
-        "DATA AND FEATURE SELECTION",
+        "DATA AND FEATURE PROCESSING",
         "-" * 72,
         f"Rows: {len(df)}",
         f"Diagnosis counts: {y.value_counts().sort_index().to_dict()}",
@@ -760,45 +1126,85 @@ def write_report(
         "LDL/HDL ratio, triglyceride/HDL ratio.",
         "Gender, Ethnicity, and EducationLevel are one-hot encoded; other "
         "numeric inputs are median-imputed and all encoded features scaled.",
-        f"Encoded/scaled features: {diagnostics['encoded_scaled_feature_count']}",
-        f"Lasso-selected features: {diagnostics['lasso_selected_count']} "
-        f"(full-data descriptive alpha={diagnostics['lasso_alpha']:.4g}; "
-        f"fold-local alpha candidates={LASSO_ALPHA_CANDIDATES}; "
-        f"absolute coefficient threshold>{LASSO_THRESHOLD}).",
-        f"PCA components retained: {diagnostics['pca_component_count']} "
-        f"(at least {PCA_VARIANCE:.0%} variance; "
-        f"observed {diagnostics['pca_cumulative_variance']:.1%}).",
-        "Lasso-selected columns and coefficients:",
     ]
-    lasso_frame = diagnostics["lasso_features"]
-    for row in lasso_frame.itertuples(index=False):
-        lines.append(
-            f"  {row.feature}: coefficient={row.lasso_coefficient:.6f}"
-        )
+    if diagnostics is None:
+        raise ValueError("Feature-processing diagnostics are required.")
+    lines.append(
+        f"Encoded/scaled features used by each model: "
+        f"{diagnostics['encoded_scaled_feature_count']}"
+    )
     lines.extend(
         [
-            "PCA retained component variance:",
+            "",
+            "CLUSTER-BASED FEATURE ANALYSIS",
+            "-" * 72,
+            f"Agglomerative feature clusters: "
+            f"{diagnostics['agglomerative_cluster_count']} "
+            "(average linkage on absolute-correlation distance).",
+            f"Divisive Bisecting K-Means feature clusters: "
+            f"{diagnostics['divisive_cluster_count']} "
+            f"(silhouette={diagnostics['divisive_silhouette_score']:.3f}; "
+            "cluster count chosen by silhouette score).",
+            f"DBSCAN feature clusters: {diagnostics['dbscan_cluster_count']}; "
+            f"ungrouped/noise features: {diagnostics['dbscan_noise_count']}.",
+            f"Consensus redundant groups: "
+            f"{diagnostics['consensus_redundant_cluster_count']}; "
+            f"candidate representatives retained: "
+            f"{diagnostics['cluster_selected_count']} of "
+            f"{diagnostics['cluster_feature_count']} encoded features.",
+            "A redundant pair is collapsed only when at least two clustering "
+            "methods agree and absolute feature correlation is at least "
+            f"{diagnostics['feature_cluster_min_correlation']:.3f}; the "
+            "representative is chosen by absolute Diagnosis association.",
+            "Candidate representatives from the full-data descriptive pass:",
         ]
     )
-    component_frame = diagnostics["pca_components"]
-    for row in component_frame.itertuples(index=False):
-        lines.append(
-            f"  {row.component}: {row.explained_variance_ratio:.2%} "
-            f"(cumulative {row.cumulative_explained_variance:.2%})"
+    for feature in diagnostics["cluster_selected_features"]:
+        lines.append(f"  {feature}")
+    if use_feature_selection:
+        lines.extend(
+            [
+                "The consensus screening is applied inside each training fold "
+                "before Lasso and PCA; the descriptive list above is not used "
+                "as a precomputed input to holdout or CV scoring.",
+                f"Lasso-selected features after consensus screening: "
+                f"{diagnostics['lasso_selected_count']} "
+                f"(full-data descriptive alpha={diagnostics['lasso_alpha']:.4g}; "
+                f"fold-local alpha candidates={LASSO_ALPHA_CANDIDATES}; "
+                f"absolute coefficient threshold>{LASSO_THRESHOLD}).",
+                f"PCA components retained: {diagnostics['pca_component_count']} "
+                f"(at least {PCA_VARIANCE:.0%} variance; "
+                f"observed {diagnostics['pca_cumulative_variance']:.1%}).",
+                "Lasso-selected columns and coefficients:",
+            ]
         )
+        lasso_frame = diagnostics["lasso_features"]
+        for row in lasso_frame.itertuples(index=False):
+            lines.append(
+                f"  {row.feature}: coefficient={row.lasso_coefficient:.6f}"
+            )
+        lines.append("PCA retained component variance:")
+        component_frame = diagnostics["pca_components"]
+        for row in component_frame.itertuples(index=False):
+            lines.append(
+                f"  {row.component}: {row.explained_variance_ratio:.2%} "
+                f"(cumulative {row.cumulative_explained_variance:.2%})"
+            )
+    else:
+        lines.append(
+            "Clustering-based feature selection and Lasso: not applied; all "
+            "engineered, encoded predictors are used."
+        )
+        lines.append("PCA: not applied.")
     lines.extend(
         [
             "",
             "ENGINEERING RATIONALE",
             "-" * 72,
-            "The source data has no missing values and no strong pairwise linear "
-            "predictor correlations (the largest absolute raw predictor "
-            "correlation is about 0.07). The added blood-pressure and lipid "
-            "measures are clinically interpretable combinations rather than "
-            "duplicates suggested by collinearity. The strongest raw "
-            "linear associations with Diagnosis are FunctionalAssessment, "
-            "ADL, MMSE, MemoryComplaints, and BehavioralProblems. The heatmap "
-            "is exploratory; supervised selection remains fold-local.",
+            "The added blood-pressure and lipid measures are clinically "
+            "interpretable combinations. The heatmap is exploratory; the "
+            "cluster selectors use absolute feature correlation inside the "
+            "training folds as described above.",
             "",
             "STACKING DESIGN",
             "-" * 72,
@@ -892,9 +1298,29 @@ def write_report(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Evaluate Alzheimer's diagnosis models."
+    )
+    parser.add_argument(
+        "--without-feature-selection",
+        "--without-pca-lasso",
+        dest="without_feature_selection",
+        action="store_true",
+        help=(
+            "Evaluate all models on every engineered, encoded, and scaled "
+            "predictor without cluster, Lasso, or PCA feature selection."
+        ),
+    )
+    args = parser.parse_args()
+    use_feature_selection = not args.without_feature_selection
+
     script_dir = Path(__file__).resolve().parent
     input_path = script_dir / "alzheimers_disease_data.csv"
-    output_dir = script_dir / "model_results"
+    output_dir = (
+        script_dir / "model_results"
+        if use_feature_selection
+        else script_dir / "model_results_without_pca_lasso"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(input_path)
@@ -915,7 +1341,23 @@ def main() -> None:
         raise ValueError(f"Missing expected categorical columns: {missing_categories}")
 
     plot_correlation_heatmap(X, y, output_dir)
-    diagnostics = create_feature_selection_diagnostics(X, y, output_dir)
+    if use_feature_selection:
+        diagnostics = create_feature_selection_diagnostics(X, y, output_dir)
+    else:
+        engineered = engineer_features(X)
+        preprocessor = make_preprocessor(X)
+        prepared = preprocessor.fit_transform(engineered)
+        scaled = StandardScaler().fit_transform(prepared)
+        _, cluster_diagnostics = create_cluster_feature_diagnostics(
+            scaled,
+            preprocessor.get_feature_names_out(),
+            y.to_numpy(),
+            output_dir,
+        )
+        diagnostics = {
+            "encoded_scaled_feature_count": int(prepared.shape[1]),
+            **cluster_diagnostics,
+        }
     all_records: list[dict[str, object]] = []
     all_candidate_records: list[dict[str, object]] = []
 
@@ -935,6 +1377,7 @@ def main() -> None:
             y_test,
             test_label,
             RANDOM_STATE,
+            use_feature_selection,
         )
         all_records.extend(records)
         all_candidate_records.extend(candidate_records)
@@ -963,6 +1406,7 @@ def main() -> None:
         diagnostics,
         all_records,
         all_candidate_records,
+        use_feature_selection,
     )
     print(f"Reports and plots saved to: {output_dir}", flush=True)
 
